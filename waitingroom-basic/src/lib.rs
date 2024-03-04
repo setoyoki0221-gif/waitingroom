@@ -1,15 +1,14 @@
 use waitingroom_core::{
+    metrics,
     pass::Pass,
+    settings,
     ticket::{Ticket, TicketIdentifier, TicketType},
     NodeId, WaitingRoomError, WaitingRoomMessageTriggered, WaitingRoomTimerTriggered,
     WaitingRoomUserTriggered,
 };
 use waitingroom_local_queue::LocalQueue;
 
-mod metrics;
-mod settings;
-
-pub use settings::BasicWaitingRoomSettings;
+pub use settings::GeneralWaitingRoomSettings;
 
 /// Since we always only have a single node in the basic waiting rooms,
 /// we just hardcode the node id as 0.
@@ -22,7 +21,7 @@ pub struct BasicWaitingRoom {
     queue_leaving_list: Vec<Ticket>,
     on_site_list: Vec<Pass>,
 
-    settings: BasicWaitingRoomSettings,
+    settings: GeneralWaitingRoomSettings,
 }
 
 // TODO: Move this function elsewhere
@@ -150,14 +149,14 @@ impl WaitingRoomUserTriggered for BasicWaitingRoom {
         // We remove the ticket from the queue leaving list.
         self.queue_leaving_list.retain(|t| t != &ticket);
         // We know the number of items removed here is always 1.
-        metrics::waitingroom_basic::to_be_let_in_count(SELF_NODE_ID).dec();
+        metrics::waitingroom::to_be_let_in_count(SELF_NODE_ID).dec();
 
         // Generate a pass for the user.
         let pass = Pass::from_ticket(ticket, self.settings.pass_expiry_time);
 
         // And add the pass to the users on site list.
         self.on_site_list.push(pass);
-        metrics::waitingroom_basic::on_site_count(SELF_NODE_ID).inc();
+        metrics::waitingroom::on_site_count(SELF_NODE_ID).inc();
 
         Ok(pass)
     }
@@ -175,15 +174,14 @@ impl WaitingRoomUserTriggered for BasicWaitingRoom {
                     // we count the number of items removed from the list (either 0 or 1) and decrement the metric by that.
                     let removed_count =
                         remove_and_return_count(&mut self.queue_leaving_list, |t| t != &ticket);
-                    metrics::waitingroom_basic::to_be_let_in_count(SELF_NODE_ID)
-                        .dec_by(removed_count);
+                    metrics::waitingroom::to_be_let_in_count(SELF_NODE_ID).dec_by(removed_count);
                 }
             }
             waitingroom_core::Identification::Pass(pass) => {
                 let removed_count = remove_and_return_count(&mut self.on_site_list, |p| {
                     p.identifier != pass.identifier
                 });
-                metrics::waitingroom_basic::on_site_count(SELF_NODE_ID).dec_by(removed_count);
+                metrics::waitingroom::on_site_count(SELF_NODE_ID).dec_by(removed_count);
             }
         }
 
@@ -205,7 +203,7 @@ impl WaitingRoomUserTriggered for BasicWaitingRoom {
 
         if pass.node_id != SELF_NODE_ID {
             self.on_site_list.push(pass);
-            metrics::waitingroom_basic::on_site_count(SELF_NODE_ID).inc();
+            metrics::waitingroom::on_site_count(SELF_NODE_ID).inc();
         }
 
         let pass = self
@@ -232,12 +230,12 @@ impl WaitingRoomTimerTriggered for BasicWaitingRoom {
 
         // Remove expired tickets from the local queue.
         let removed_count = self.local_queue.remove_expired(now_time);
-        metrics::waitingroom_basic::in_queue_count(SELF_NODE_ID).dec_by(removed_count);
+        metrics::waitingroom::in_queue_count(SELF_NODE_ID).dec_by(removed_count);
 
         // Remove expired passes from the on site list.
         let removed_count =
             remove_and_return_count(&mut self.on_site_list, |pass| pass.expiry_time > now_time);
-        metrics::waitingroom_basic::on_site_count(SELF_NODE_ID).dec_by(removed_count);
+        metrics::waitingroom::on_site_count(SELF_NODE_ID).dec_by(removed_count);
 
         // TODO: Replace this with something in an operation queue.
         // This method should not be called inside another method.
@@ -247,7 +245,7 @@ impl WaitingRoomTimerTriggered for BasicWaitingRoom {
         let removed_count = remove_and_return_count(&mut self.queue_leaving_list, |ticket| {
             ticket.expiry_time > now_time
         });
-        metrics::waitingroom_basic::to_be_let_in_count(SELF_NODE_ID).dec_by(removed_count);
+        metrics::waitingroom::to_be_let_in_count(SELF_NODE_ID).dec_by(removed_count);
 
         Ok(())
     }
@@ -283,7 +281,7 @@ impl WaitingRoomTimerTriggered for BasicWaitingRoom {
 impl WaitingRoomMessageTriggered for BasicWaitingRoom {}
 
 impl BasicWaitingRoom {
-    pub fn new(settings: BasicWaitingRoomSettings) -> Self {
+    pub fn new(settings: GeneralWaitingRoomSettings) -> Self {
         Self {
             local_queue: LocalQueue::new(),
             queue_leaving_list: Vec::new(),
@@ -304,7 +302,7 @@ impl BasicWaitingRoom {
             match ticket.ticket_type {
                 TicketType::Normal => {
                     self.queue_leaving_list.push(ticket);
-                    metrics::waitingroom_basic::to_be_let_in_count(SELF_NODE_ID).inc();
+                    metrics::waitingroom::to_be_let_in_count(SELF_NODE_ID).inc();
                 }
                 TicketType::Drain => {
                     // This ticket is a dummy ticket. We shouldn't do anything with it.
@@ -331,7 +329,7 @@ impl BasicWaitingRoom {
     pub fn enqueue(&mut self, ticket: Ticket) {
         self.local_queue.enqueue(ticket);
         if ticket.ticket_type == TicketType::Normal {
-            metrics::waitingroom_basic::in_queue_count(SELF_NODE_ID).inc();
+            metrics::waitingroom::in_queue_count(SELF_NODE_ID).inc();
         }
     }
 
@@ -339,7 +337,7 @@ impl BasicWaitingRoom {
     pub fn dequeue(&mut self) -> Option<Ticket> {
         let element = self.local_queue.dequeue();
         if element.is_some() && element.as_ref().unwrap().ticket_type == TicketType::Normal {
-            metrics::waitingroom_basic::in_queue_count(SELF_NODE_ID).dec();
+            metrics::waitingroom::in_queue_count(SELF_NODE_ID).dec();
         }
         element
     }
@@ -348,7 +346,7 @@ impl BasicWaitingRoom {
     pub fn remove_from_queue(&mut self, ticket_identifier: TicketIdentifier) {
         if let Some(ticket) = self.local_queue.remove(ticket_identifier) {
             if ticket.ticket_type == TicketType::Normal {
-                metrics::waitingroom_basic::in_queue_count(SELF_NODE_ID).dec();
+                metrics::waitingroom::in_queue_count(SELF_NODE_ID).dec();
             }
         }
     }
